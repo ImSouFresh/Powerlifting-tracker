@@ -29,6 +29,13 @@ st.markdown("""
         margin: 0.5rem 0;
         border-left: 4px solid #ff6b6b;
     }
+    .next-workout-card {
+        background: #e8f4fd;
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+        border-left: 4px solid #3498db;
+    }
     .exercise-name {
         font-weight: bold;
         font-size: 1.2rem;
@@ -56,7 +63,7 @@ class Exercise:
     notes: str = ""
     completed_sets: int = 0
     failed_sets: int = 0
-    status: str = "pending"  # pending, completed, failed
+    status: str = "pending"
 
 @dataclass
 class WorkoutSession:
@@ -72,18 +79,20 @@ class PowerliftingTracker:
         self.load_data()
 
     def load_data(self):
-        """Charge les données sauvegardées"""
         if os.path.exists(self.data_file):
-            with open(self.data_file, 'r') as f:
-                data = json.load(f)
-                self.start_date = datetime.datetime.strptime(data.get('start_date', str(datetime.date.today())), '%Y-%m-%d').date()
-                self.sessions = data.get('sessions', [])
+            try:
+                with open(self.data_file, 'r') as f:
+                    data = json.load(f)
+                    self.start_date = datetime.datetime.strptime(data.get('start_date', str(datetime.date.today())), '%Y-%m-%d').date()
+                    self.sessions = data.get('sessions', [])
+            except:
+                self.start_date = datetime.date.today()
+                self.sessions = []
         else:
             self.start_date = datetime.date.today()
             self.sessions = []
 
     def save_data(self):
-        """Sauvegarde les données"""
         data = {
             'start_date': str(self.start_date),
             'sessions': self.sessions
@@ -92,14 +101,12 @@ class PowerliftingTracker:
             json.dump(data, f, indent=2)
 
     def get_current_week(self) -> int:
-        """Retourne la semaine actuelle"""
         today = datetime.date.today()
         days_elapsed = (today - self.start_date).days
         week = (days_elapsed // 7) + 1
-        return min(week, 8)
+        return min(max(week, 1), 8)
 
     def get_program_data(self):
-        """Données du programme"""
         return {
             "SÉANCE A - LUNDI": {
                 "semaine_1-2": [
@@ -233,10 +240,9 @@ class PowerliftingTracker:
             }
         }
 
-    def get_today_workout(self):
-        """Retourne l'entraînement du jour"""
-        today = datetime.date.today()
-        day_of_week = today.weekday()
+    def get_workout_by_day(self, target_date):
+        """Retourne l'entraînement pour une date donnée"""
+        day_of_week = target_date.weekday()
 
         workout_schedule = {
             0: "SÉANCE A - LUNDI",
@@ -246,16 +252,20 @@ class PowerliftingTracker:
         }
 
         if day_of_week not in workout_schedule:
-            return None, []
+            return None, [], 0
 
         workout_name = workout_schedule[day_of_week]
-        current_week = self.get_current_week()
 
-        if current_week <= 2:
+        # Calcul de la semaine pour cette date
+        days_elapsed = (target_date - self.start_date).days
+        week = (days_elapsed // 7) + 1
+        week = min(max(week, 1), 8)
+
+        if week <= 2:
             phase = "semaine_1-2"
-        elif current_week <= 4:
+        elif week <= 4:
             phase = "semaine_3-4"
-        elif current_week <= 6:
+        elif week <= 6:
             phase = "semaine_5-6"
         else:
             phase = "semaine_7-8"
@@ -263,7 +273,31 @@ class PowerliftingTracker:
         program_data = self.get_program_data()
         exercises = program_data[workout_name][phase]
 
-        return workout_name, exercises
+        return workout_name, exercises, week
+
+    def get_today_workout(self):
+        today = datetime.date.today()
+        return self.get_workout_by_day(today)
+
+    def get_next_workouts(self, days_ahead=7):
+        """Retourne les prochains entraînements"""
+        today = datetime.date.today()
+        next_workouts = []
+
+        for i in range(1, days_ahead + 1):
+            future_date = today + datetime.timedelta(days=i)
+            workout_name, exercises, week = self.get_workout_by_day(future_date)
+
+            if workout_name:  # Si c'est un jour d'entraînement
+                next_workouts.append({
+                    'date': future_date,
+                    'day_name': future_date.strftime("%A"),
+                    'workout_name': workout_name,
+                    'exercises': exercises,
+                    'week': week
+                })
+
+        return next_workouts
 
 # Initialisation
 if 'tracker' not in st.session_state:
@@ -293,11 +327,11 @@ with st.expander("⚙️ Configuration"):
         st.rerun()
 
 # Entraînement du jour
-workout_name, exercises = tracker.get_today_workout()
+workout_name, exercises, week = tracker.get_today_workout()
 
 if workout_name:
     st.markdown(f"## 🏋️ {workout_name}")
-    st.markdown(f"**Semaine {tracker.get_current_week()}/8**")
+    st.markdown(f"**Semaine {week}/8**")
 
     # Initialisation de la session d'entraînement
     if 'current_workout' not in st.session_state:
@@ -347,11 +381,10 @@ if workout_name:
 
     # Bouton de fin d'entraînement
     if st.button("🏁 Terminer l'entraînement", type="primary"):
-        # Sauvegarder la session
         session = WorkoutSession(
             date=str(datetime.date.today()),
             workout_name=workout_name,
-            week=tracker.get_current_week(),
+            week=week,
             exercises=[asdict(ex) for ex in st.session_state.current_workout],
             completed=True
         )
@@ -361,7 +394,6 @@ if workout_name:
         st.success("🎉 Entraînement terminé et sauvegardé!")
         st.balloons()
 
-        # Reset pour la prochaine session
         if 'current_workout' in st.session_state:
             del st.session_state.current_workout
 
@@ -369,10 +401,36 @@ else:
     st.markdown("## 🛌 Jour de repos")
     st.info("Récupération active recommandée - Étirements, marche, mobilité")
 
+# Aperçu des prochains entraînements
+st.markdown("## 📅 Prochains entraînements")
+next_workouts = tracker.get_next_workouts(7)
+
+if next_workouts:
+    for workout in next_workouts[:3]:  # Affiche les 3 prochains
+        with st.container():
+            st.markdown(f'<div class="next-workout-card">', unsafe_allow_html=True)
+
+            st.markdown(f"**{workout['day_name']} {workout['date'].strftime('%d/%m')} - {workout['workout_name']}**")
+            st.markdown(f"*Semaine {workout['week']}/8*")
+
+            # Affiche les 3 premiers exercices
+            for ex in workout['exercises'][:3]:
+                weight_str = f" @ {ex.weight}kg" if ex.weight > 0 else ""
+                notes_str = f" ({ex.notes})" if ex.notes else ""
+                st.markdown(f"• {ex.name}: {ex.sets}×{ex.reps}{weight_str}{notes_str}")
+
+            if len(workout['exercises']) > 3:
+                st.markdown(f"• ... et {len(workout['exercises']) - 3} autres exercices")
+
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown("---")
+else:
+    st.info("Aucun entraînement prévu dans les 7 prochains jours")
+
 # Historique
 if tracker.sessions:
     with st.expander("📊 Historique des entraînements"):
-        for session in reversed(tracker.sessions[-5:]):  # 5 dernières sessions
+        for session in reversed(tracker.sessions[-5:]):
             st.markdown(f"**{session['date']} - {session['workout_name']}**")
             completed_exercises = sum(1 for ex in session['exercises'] if ex['status'] == 'completed')
             total_exercises = len(session['exercises'])
